@@ -35,6 +35,27 @@ int    i_fvgLen        = input.int(10, 'FVG Extension (Bars)', minval = 1, group
 color  i_bullFVGColor  = input.color(color.new(#4caf50, 50), 'Bullish FVG Color', group = GRP_FVG)
 color  i_bearFVGColor  = input.color(color.new(#f44336, 50), 'Bearish FVG Color', group = GRP_FVG)
 
+// --- Moving Average Settings ---
+string GRP_MA = 'Moving Average'
+bool   i_showMA        = input.bool(false, 'Show Moving Average', group = GRP_MA)
+string MA_SMA  = 'SMA'
+string MA_EMA  = 'EMA'
+string MA_WMA  = 'WMA'
+string MA_VWMA = 'VWMA'
+string MA_RMA  = 'RMA'
+string MA_HMA  = 'HMA'
+string MA_SMMA = 'SMMA'
+string MA_DEMA = 'DEMA'
+string MA_TEMA = 'TEMA'
+string i_maType        = input.string(MA_SMA, 'MA Type', options = [MA_SMA, MA_EMA, MA_WMA, MA_VWMA, MA_RMA, MA_HMA, MA_SMMA, MA_DEMA, MA_TEMA], group = GRP_MA)
+int    i_maLen         = input.int(20, 'MA Length', minval = 1, group = GRP_MA)
+string i_maSrc         = input.string('close', 'MA Source', options = ['open', 'high', 'low', 'close', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'], group = GRP_MA)
+bool   i_maSmooth      = input.bool(false, 'Apply Smoothing', group = GRP_MA)
+int    i_maSmoothLen   = input.int(3, 'Smoothing Length', minval = 1, group = GRP_MA)
+string i_maSmoothType  = input.string(MA_SMA, 'Smoothing Type', options = [MA_SMA, MA_EMA, MA_WMA, MA_RMA], group = GRP_MA)
+color  i_maColor       = input.color(color.new(#2196f3, 0), 'MA Color', group = GRP_MA)
+int    i_maWidth       = input.int(2, 'MA Line Width', minval = 1, maxval = 5, group = GRP_MA)
+
 // ══════════════════════════════════════════════════════════════════════════════
 // 3. CORE RANGE CALCULATIONS
 // ══════════════════════════════════════════════════════════════════════════════
@@ -84,6 +105,72 @@ if i_showFVG
     if high < low[2]
         box.new(bar_index[1], high, bar_index + i_fvgLen, low[2], bgcolor = i_bearFVGColor, border_color = na)
 
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 5. MOVING AVERAGE CALCULATIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Get the price source for MA calculation
+float maSrc = switch i_maSrc
+    'open'  => open
+    'high'  => high
+    'low'   => low
+    'close' => close
+    'hl2'   => hl2
+    'hlc3'  => hlc3
+    'ohlc4' => ohlc4
+    'hlcc4' => hlcc4
+    => close
+
+// Pre-calculate ALL MA types on every bar to ensure consistent TA function calls
+// (Pine Script requires TA functions to be called on each bar for accurate historical state)
+float ma_sma  = ta.sma(maSrc, i_maLen)
+float ma_ema  = ta.ema(maSrc, i_maLen)
+float ma_wma  = ta.wma(maSrc, i_maLen)
+float ma_vwma = ta.vwma(maSrc, i_maLen)
+float ma_rma  = ta.rma(maSrc, i_maLen)
+float ma_hma  = ta.hma(maSrc, i_maLen)
+// DEMA = 2 * EMA - EMA(EMA)
+float dema_ema1 = ta.ema(maSrc, i_maLen)
+float dema_ema2 = ta.ema(dema_ema1, i_maLen)
+float ma_dema   = 2 * dema_ema1 - dema_ema2
+// TEMA = 3 * EMA - 3 * EMA(EMA) + EMA(EMA(EMA))
+float tema_ema1 = ta.ema(maSrc, i_maLen)
+float tema_ema2 = ta.ema(tema_ema1, i_maLen)
+float tema_ema3 = ta.ema(tema_ema2, i_maLen)
+float ma_tema   = 3 * tema_ema1 - 3 * tema_ema2 + tema_ema3
+
+// Select the appropriate pre-calculated MA based on user choice
+float maValue = switch i_maType
+    MA_SMA  => ma_sma
+    MA_EMA  => ma_ema
+    MA_WMA  => ma_wma
+    MA_VWMA => ma_vwma
+    MA_RMA  => ma_rma
+    MA_HMA  => ma_hma
+    MA_SMMA => ma_rma  // SMMA is equivalent to RMA
+    MA_DEMA => ma_dema
+    MA_TEMA => ma_tema
+    => ma_sma
+
+// Pre-calculate smoothing MAs (all types, called every bar)
+float smooth_sma = ta.sma(maValue, i_maSmoothLen)
+float smooth_ema = ta.ema(maValue, i_maSmoothLen)
+float smooth_wma = ta.wma(maValue, i_maSmoothLen)
+float smooth_rma = ta.rma(maValue, i_maSmoothLen)
+
+// Select smoothed value if smoothing is enabled
+float maSmoothed = switch i_maSmoothType
+    MA_SMA => smooth_sma
+    MA_EMA => smooth_ema
+    MA_WMA => smooth_wma
+    MA_RMA => smooth_rma
+    => smooth_sma
+
+float maFinal = i_maSmooth ? maSmoothed : maValue
+
+// Plot the moving average (conditional on toggle)
+plot(i_showMA ? maFinal : na, 'Moving Average', color = i_maColor, linewidth = i_maWidth)
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 6. VISUAL ELEMENTS (Boxes, Lines, Labels)
