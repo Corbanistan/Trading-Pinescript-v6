@@ -17,6 +17,7 @@ color i_liqColor       = input.color(color.new(#ffeb3b, 85), 'Liquidity Zones Co
 color i_lineColor      = input.color(color.white, 'Boundary Line Color', group = GRP_VIS)
 bool  i_showLines      = input.bool(true, 'Show Price Lines', group = GRP_VIS)
 bool  i_showLabels     = input.bool(true, 'Show Price Labels', group = GRP_VIS)
+bool  i_showSignals    = input.bool(true, 'Show Signal Markers', group = GRP_VIS, tooltip = 'Display chart markers for trading signals: ▲ Long (bullish GP + 2-candle reversal), ▼ Short (bearish GP + 2-candle reversal), ● SFP (liquidity grab at range extremes).')
 
 // --- Range Settings ---
 string GRP_RANGE = 'Range Settings'
@@ -57,7 +58,7 @@ color  i_maColor       = input.color(color.new(#2196f3, 0), 'MA Color', group = 
 int    i_maWidth       = input.int(2, 'MA Line Width', minval = 1, maxval = 5, group = GRP_MA)
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 3. CORE RANGE CALCULATIONS
+// 2. CORE RANGE CALCULATIONS
 // ══════════════════════════════════════════════════════════════════════════════
 
 // Calculate range high/low based on selected mode
@@ -68,12 +69,18 @@ var int anchorBar = na
 
 if i_rangeMode == MODE_ROLLING
     // Rolling lookback mode - exclude current bar for proper SFP signals
-    // Note: highestbars/lowestbars return negative offsets, use math.abs for indexing
-    int hOff = ta.highestbars(high[1], i_lookback)
-    int lOff = ta.lowestbars(low[1], i_lookback)
-    rHigh := high[1 + math.abs(hOff)]
-    rLow := low[1 + math.abs(lOff)]
-    anchorBar := i_autoFit ? bar_index - math.max(math.abs(hOff), math.abs(lOff)) - 1 : bar_index - i_lookback
+    if bar_index < i_lookback + 1
+        // Insufficient history: use all available bars
+        rHigh := ta.highest(high, bar_index + 1)
+        rLow := ta.lowest(low, bar_index + 1)
+        anchorBar := 0
+    else
+        // Note: highestbars/lowestbars return negative offsets, use math.abs for indexing
+        int hOff = ta.highestbars(high[1], i_lookback)
+        int lOff = ta.lowestbars(low[1], i_lookback)
+        rHigh := high[1 + math.abs(hOff)]
+        rLow := low[1 + math.abs(lOff)]
+        anchorBar := i_autoFit ? bar_index - math.max(math.abs(hOff), math.abs(lOff)) - 1 : bar_index - i_lookback
 else if i_rangeMode == MODE_PREV_DAY
     // Previous day high/low - stable non-repainting levels
     rHigh := request.security(syminfo.tickerid, 'D', high[1], lookahead = barmerge.lookahead_on)
@@ -94,7 +101,7 @@ float sUp = rHigh - rDiff * 0.35   // Bearish GP upper
 float sLo = rHigh - rDiff * 0.382  // Bearish GP lower
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 4. FVG LOGIC (Simple Static Boxes)
+// 3. FVG LOGIC (Simple Static Boxes)
 // ══════════════════════════════════════════════════════════════════════════════
 
 if i_showFVG
@@ -107,7 +114,7 @@ if i_showFVG
 
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 5. MOVING AVERAGE CALCULATIONS
+// 4. MOVING AVERAGE CALCULATIONS
 // ══════════════════════════════════════════════════════════════════════════════
 
 // Get the price source for MA calculation
@@ -127,18 +134,15 @@ float maSrc = switch i_maSrc
 float ma_sma  = ta.sma(maSrc, i_maLen)
 float ma_ema  = ta.ema(maSrc, i_maLen)
 float ma_wma  = ta.wma(maSrc, i_maLen)
-float ma_vwma = ta.vwma(maSrc, i_maLen)
+float ma_vwma = nz(volume) > 0 ? ta.vwma(maSrc, i_maLen) : ma_sma  // Fallback to SMA on no-volume symbols
 float ma_rma  = ta.rma(maSrc, i_maLen)
 float ma_hma  = ta.hma(maSrc, i_maLen)
-// DEMA = 2 * EMA - EMA(EMA)
-float dema_ema1 = ta.ema(maSrc, i_maLen)
-float dema_ema2 = ta.ema(dema_ema1, i_maLen)
-float ma_dema   = 2 * dema_ema1 - dema_ema2
-// TEMA = 3 * EMA - 3 * EMA(EMA) + EMA(EMA(EMA))
-float tema_ema1 = ta.ema(maSrc, i_maLen)
-float tema_ema2 = ta.ema(tema_ema1, i_maLen)
-float tema_ema3 = ta.ema(tema_ema2, i_maLen)
-float ma_tema   = 3 * tema_ema1 - 3 * tema_ema2 + tema_ema3
+// DEMA = 2 * EMA - EMA(EMA) (reuse ma_ema for efficiency)
+float dema_ema2 = ta.ema(ma_ema, i_maLen)
+float ma_dema   = 2 * ma_ema - dema_ema2
+// TEMA = 3 * EMA - 3 * EMA(EMA) + EMA(EMA(EMA)) (reuse previous EMAs)
+float tema_ema3 = ta.ema(dema_ema2, i_maLen)
+float ma_tema   = 3 * ma_ema - 3 * dema_ema2 + tema_ema3
 
 // Select the appropriate pre-calculated MA based on user choice
 float maValue = switch i_maType
@@ -173,7 +177,7 @@ float maFinal = i_maSmooth ? maSmoothed : maValue
 plot(i_showMA ? maFinal : na, 'Moving Average', color = i_maColor, linewidth = i_maWidth)
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 6. VISUAL ELEMENTS (Boxes, Lines, Labels)
+// 5. VISUAL ELEMENTS (Boxes, Lines, Labels)
 // ══════════════════════════════════════════════════════════════════════════════
 
 var box b_Range   = box.new(na, na, na, na, xloc = xloc.bar_index, bgcolor = i_boxColor, border_color = color.gray)
@@ -224,7 +228,7 @@ if barstate.islast
             label.set_xy(array.get(lb_prices, i), na, na)
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 7. SIGNAL LOGIC
+// 6. SIGNAL LOGIC
 // ══════════════════════════════════════════════════════════════════════════════
 
 // Swing Failure Pattern (SFP) - now works correctly with [1] offset fix
@@ -256,13 +260,19 @@ if signalShortOnly or (tBear and high > rHigh)
 if signalLongOnly or (tBull and low < rLow)
     tBull := false
 
+// Signal visualization (optional markers on chart)
+plotshape(i_showSignals and signalLongOnly, 'Long Signal', shape.triangleup, location.belowbar, color.new(#4caf50, 0), size = size.small)
+plotshape(i_showSignals and signalShortOnly, 'Short Signal', shape.triangledown, location.abovebar, color.new(#f44336, 0), size = size.small)
+plotshape(i_showSignals and sfpLong, 'SFP Long', shape.circle, location.belowbar, color.new(#ff9800, 0), size = size.tiny)
+plotshape(i_showSignals and sfpShort, 'SFP Short', shape.circle, location.abovebar, color.new(#ff9800, 0), size = size.tiny)
+
 // ══════════════════════════════════════════════════════════════════════════════
-// 8. ALERTS (Enhanced with Price Levels)
+// 7. ALERTS
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Pre-calculate crossover/crossunder to ensure consistent execution on every bar
-bool gpTouchBearish = ta.crossover(high, sLo)
-bool gpTouchBullish = ta.crossunder(low, bUp)
+// GP touch detection - handles both crossovers and gap opens into the zone
+bool gpTouchBearish = high >= sLo and high[1] < sLo
+bool gpTouchBullish = low <= bUp and low[1] > bUp
 
 alertcondition(gpTouchBearish or gpTouchBullish, '1. GP Touch', 'Price entered Golden Pocket zone.')
 alertcondition(signalLongOnly, '2. Long: 2-Candle Pattern', 'Long signal confirmed in BULLISH Golden Pocket.')
