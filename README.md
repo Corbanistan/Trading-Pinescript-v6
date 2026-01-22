@@ -1,4 +1,4 @@
-# Pinescript v6 Scripts
+# Trading Indicators & Strategies in Pinescript v6
 
 This repository contains public Pinescript v6 scripts for use in TradingView.
 
