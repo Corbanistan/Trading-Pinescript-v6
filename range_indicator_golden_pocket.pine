@@ -1,0 +1,184 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Corbanistan
+
+//@version=6
+indicator('Range Indicator: Golden Pocket, Liquidity, & FVG', overlay = true, max_lines_count = 500, max_boxes_count = 500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 1. INPUT SETTINGS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// --- Visual Settings ---
+string GRP_VIS = 'Visuals'
+color i_boxColor       = input.color(color.new(#787b86, 92), 'Range Background', group = GRP_VIS)
+color i_gpBullishColor = input.color(color.new(#4caf50, 60), 'Bullish GP Color', group = GRP_VIS)
+color i_gpBearishColor = input.color(color.new(#f44336, 60), 'Bearish GP Color', group = GRP_VIS)
+color i_liqColor       = input.color(color.new(#ffeb3b, 85), 'Liquidity Zones Color', group = GRP_VIS)
+color i_lineColor      = input.color(color.white, 'Boundary Line Color', group = GRP_VIS)
+bool  i_showLines      = input.bool(true, 'Show Price Lines', group = GRP_VIS)
+bool  i_showLabels     = input.bool(true, 'Show Price Labels', group = GRP_VIS)
+
+// --- Range Settings ---
+string GRP_RANGE = 'Range Settings'
+string MODE_ROLLING = 'Rolling Lookback'
+string MODE_PREV_DAY = 'Previous Day'
+string MODE_PREV_WEEK = 'Previous Week'
+string i_rangeMode     = input.string(MODE_ROLLING, 'Range Mode', options = [MODE_ROLLING, MODE_PREV_DAY, MODE_PREV_WEEK], group = GRP_RANGE)
+bool   i_autoFit       = input.bool(true, 'Auto-Fit Box to Last High/Low (Rolling Only)', group = GRP_RANGE)
+int    i_lookback      = input.int(100, 'Lookback Period (Rolling Only)', minval = 2, group = GRP_RANGE)
+int    i_offsetR       = input.int(50, 'Box Offset Right', minval = 0, group = GRP_RANGE)
+
+// --- FVG Settings ---
+string GRP_FVG = 'FVG Settings'
+bool   i_showFVG       = input.bool(true, 'Show Fair Value Gaps (FVG)', group = GRP_FVG)
+int    i_fvgLen        = input.int(10, 'FVG Extension (Bars)', minval = 1, group = GRP_FVG)
+color  i_bullFVGColor  = input.color(color.new(#4caf50, 50), 'Bullish FVG Color', group = GRP_FVG)
+color  i_bearFVGColor  = input.color(color.new(#f44336, 50), 'Bearish FVG Color', group = GRP_FVG)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 3. CORE RANGE CALCULATIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Calculate range high/low based on selected mode
+// Fix: Use [1] offset to exclude current bar from range calculation (enables proper SFP detection)
+var float rHigh = na
+var float rLow = na
+var int anchorBar = na
+
+if i_rangeMode == MODE_ROLLING
+    // Rolling lookback mode - exclude current bar for proper SFP signals
+    // Note: highestbars/lowestbars return negative offsets, use math.abs for indexing
+    int hOff = ta.highestbars(high[1], i_lookback)
+    int lOff = ta.lowestbars(low[1], i_lookback)
+    rHigh := high[1 + math.abs(hOff)]
+    rLow := low[1 + math.abs(lOff)]
+    anchorBar := i_autoFit ? bar_index - math.max(math.abs(hOff), math.abs(lOff)) - 1 : bar_index - i_lookback
+else if i_rangeMode == MODE_PREV_DAY
+    // Previous day high/low - stable non-repainting levels
+    rHigh := request.security(syminfo.tickerid, 'D', high[1], lookahead = barmerge.lookahead_on)
+    rLow := request.security(syminfo.tickerid, 'D', low[1], lookahead = barmerge.lookahead_on)
+    anchorBar := bar_index - i_lookback  // Approximate anchor
+else if i_rangeMode == MODE_PREV_WEEK
+    // Previous week high/low - stable non-repainting levels
+    rHigh := request.security(syminfo.tickerid, 'W', high[1], lookahead = barmerge.lookahead_on)
+    rLow := request.security(syminfo.tickerid, 'W', low[1], lookahead = barmerge.lookahead_on)
+    anchorBar := bar_index - i_lookback  // Approximate anchor
+
+float rDiff = rHigh - rLow
+
+// Golden Pocket Fibonacci levels
+float bUp = rLow + rDiff * 0.382   // Bullish GP upper
+float bLo = rLow + rDiff * 0.35    // Bullish GP lower
+float sUp = rHigh - rDiff * 0.35   // Bearish GP upper
+float sLo = rHigh - rDiff * 0.382  // Bearish GP lower
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 4. FVG LOGIC (Simple Static Boxes)
+// ══════════════════════════════════════════════════════════════════════════════
+
+if i_showFVG
+    // Bullish FVG: gap up (current low > 2 bars ago high)
+    if low > high[2]
+        box.new(bar_index[1], low, bar_index + i_fvgLen, high[2], bgcolor = i_bullFVGColor, border_color = na)
+    // Bearish FVG: gap down (current high < 2 bars ago low)
+    if high < low[2]
+        box.new(bar_index[1], high, bar_index + i_fvgLen, low[2], bgcolor = i_bearFVGColor, border_color = na)
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 6. VISUAL ELEMENTS (Boxes, Lines, Labels)
+// ══════════════════════════════════════════════════════════════════════════════
+
+var box b_Range   = box.new(na, na, na, na, xloc = xloc.bar_index, bgcolor = i_boxColor, border_color = color.gray)
+var box b_Bullish = box.new(na, na, na, na, xloc = xloc.bar_index, bgcolor = i_gpBullishColor, border_color = na, text = 'BULLISH Golden Pocket ↑', text_color = color.white, text_size = size.small)
+var box b_Bearish = box.new(na, na, na, na, xloc = xloc.bar_index, bgcolor = i_gpBearishColor, border_color = na, text = 'BEARISH Golden Pocket ↓', text_color = color.white, text_size = size.small)
+var box b_LiqTop  = box.new(na, na, na, na, xloc = xloc.bar_index, bgcolor = i_liqColor, border_color = na, text = 'LIQUIDITY', text_color = color.white, text_size = size.tiny)
+var box b_LiqBot  = box.new(na, na, na, na, xloc = xloc.bar_index, bgcolor = i_liqColor, border_color = na, text = 'LIQUIDITY', text_color = color.white, text_size = size.tiny)
+
+var array<line>  l_levels  = array.new<line>()
+var array<label> lb_prices = array.new<label>()
+
+if barstate.isfirst
+    for i = 0 to 7
+        array.push(l_levels, line.new(na, na, na, na, xloc = xloc.bar_index, color = i_lineColor))
+        array.push(lb_prices, label.new(na, na, '', xloc = xloc.bar_index, color = color.new(color.black, 100), textcolor = i_lineColor, size = size.small, style = label.style_label_left))
+
+if barstate.islast
+    int rightBar = bar_index + i_offsetR
+    
+    // Update main boxes
+    box.set_lefttop(b_Range, anchorBar, rHigh)
+    box.set_rightbottom(b_Range, rightBar, rLow)
+    box.set_lefttop(b_Bullish, anchorBar, bUp)
+    box.set_rightbottom(b_Bullish, rightBar, bLo)
+    box.set_lefttop(b_Bearish, anchorBar, sUp)
+    box.set_rightbottom(b_Bearish, rightBar, sLo)
+    box.set_lefttop(b_LiqTop, anchorBar, rHigh)
+    box.set_rightbottom(b_LiqTop, rightBar, rHigh - rDiff * 0.05)
+    box.set_lefttop(b_LiqBot, anchorBar, rLow + rDiff * 0.05)
+    box.set_rightbottom(b_LiqBot, rightBar, rLow)
+    
+    // Update price lines and labels
+    array<float> p_vals = array.from(rHigh, rHigh - rDiff * 0.05, sUp, sLo, bUp, bLo, rLow + rDiff * 0.05, rLow)
+    for i = 0 to 7
+        float v = array.get(p_vals, i)
+        // Update lines if enabled
+        if i_showLines
+            line.set_xy1(array.get(l_levels, i), anchorBar, v)
+            line.set_xy2(array.get(l_levels, i), rightBar, v)
+        else
+            line.set_xy1(array.get(l_levels, i), na, na)
+            line.set_xy2(array.get(l_levels, i), na, na)
+        // Update labels if enabled
+        if i_showLabels
+            label.set_xy(array.get(lb_prices, i), rightBar, v)
+            label.set_text(array.get(lb_prices, i), ' ' + str.tostring(v, format.mintick))
+        else
+            label.set_xy(array.get(lb_prices, i), na, na)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 7. SIGNAL LOGIC
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Swing Failure Pattern (SFP) - now works correctly with [1] offset fix
+bool sfpShort = high > rHigh and close < rHigh
+bool sfpLong  = low < rLow and close > rLow
+
+// Golden Pocket touch tracking
+var bool tBear = false
+var bool tBull = false
+
+if high >= sLo and low <= sUp
+    tBear := true
+
+if low <= bUp and high >= bLo
+    tBull := true
+
+// 2-Candle reversal pattern
+bool pL = close[2] < open[2] and close[1] > open[1] and close > high[1]  // Bullish reversal
+bool pS = close[2] > open[2] and close[1] < open[1] and close < low[1]   // Bearish reversal
+
+// Combined signals
+bool signalLongOnly  = tBull and pL
+bool signalShortOnly = tBear and pS
+
+// Reset touch flags after signal or breakout
+if signalShortOnly or (tBear and high > rHigh)
+    tBear := false
+
+if signalLongOnly or (tBull and low < rLow)
+    tBull := false
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 8. ALERTS (Enhanced with Price Levels)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Pre-calculate crossover/crossunder to ensure consistent execution on every bar
+bool gpTouchBearish = ta.crossover(high, sLo)
+bool gpTouchBullish = ta.crossunder(low, bUp)
+
+alertcondition(gpTouchBearish or gpTouchBullish, '1. GP Touch', 'Price entered Golden Pocket zone.')
+alertcondition(signalLongOnly, '2. Long: 2-Candle Pattern', 'Long signal confirmed in BULLISH Golden Pocket.')
+alertcondition(signalShortOnly, '3. Short: 2-Candle Pattern', 'Short signal confirmed in BEARISH Golden Pocket.')
+alertcondition(sfpLong, '4. SFP Long (Liquidity Grab)', 'SFP detected: Liquidity grab below range low.')
+alertcondition(sfpShort, '5. SFP Short (Liquidity Grab)', 'SFP detected: Liquidity grab above range high.')
