@@ -10,7 +10,9 @@ indicator("TrendHorizon Suite", shorttitle="THS", overlay=true, max_lines_count=
 
 // --- Smart Signals ---
 string GRP_SIGNALS = "Smart Signals"
-bool   i_enableSignals    = input.bool(true, "Enable Smart Signals", group=GRP_SIGNALS, tooltip="Master switch for trend signals and candle coloring")
+bool   i_showCandleColors = input.bool(true, "Show Candle Colors", group=GRP_SIGNALS, tooltip="Color candles based on trend direction")
+bool   i_showSignalLabels = input.bool(true, "Show Signal Labels", group=GRP_SIGNALS, tooltip="Display signal arrows on chart")
+bool   i_strongOnly       = input.bool(false, "Show Only Strong Signals", group=GRP_SIGNALS, tooltip="Hides regular signals, only shows momentum-backed strong signals")
 bool   i_detectRanging    = input.bool(true, "Detect Ranging Candles (Gray)", group=GRP_SIGNALS, tooltip="Highlights low momentum / consolidation periods")
 int    i_timeHorizon      = input.int(3, "Time Horizon", minval=1, maxval=7, group=GRP_SIGNALS, tooltip="Sensitivity: 1=Scalp/Fast, 7=Swing/Slow")
 
@@ -91,6 +93,11 @@ bool isBearish = hmaSlope < 0
 float adxThreshold = 20
 bool isRanging = i_detectRanging and adx < adxThreshold
 
+// --- Hysteresis Filter (1-bar confirmation after range exit) ---
+var int barsSinceRange = 0
+barsSinceRange := isRanging ? 0 : barsSinceRange + 1
+bool confirmedTrend = barsSinceRange >= 2  // Require 1 bar after range ends
+
 // --- Signal Generation ---
 // Track previous trend state
 var int trendState = 0  // -1 = bearish, 0 = neutral, 1 = bullish
@@ -104,9 +111,9 @@ else if isBearish and not isRanging
 else if isRanging
     trendState := 0
 
-// Detect trend changes (signals)
-bool bullishSignal = trendState == 1 and prevTrendState != 1
-bool bearishSignal = trendState == -1 and prevTrendState != -1
+// Detect trend changes (signals) - require confirmation after range
+bool bullishSignal = trendState == 1 and prevTrendState != 1 and confirmedTrend
+bool bearishSignal = trendState == -1 and prevTrendState != -1 and confirmedTrend
 
 // --- Strong Signal Detection (Momentum Acceleration) ---
 float roc = ta.roc(close, hmaHalfLen)
@@ -134,20 +141,20 @@ if bearishSignal
     bearishSignalCount := bearishSignalCount + 1
 
 // --- Plot Signals ---
-if i_enableSignals
+if i_showSignalLabels
     if strongBullish
         label.new(bar_index, low, "▲+", style=label.style_label_up, color=color.new(i_bullishColor, 0), textcolor=color.white, size=size.small)
-    else if regularBullish
+    else if regularBullish and not i_strongOnly
         label.new(bar_index, low, "▲", style=label.style_label_up, color=color.new(i_bullishColor, 0), textcolor=color.white, size=size.small)
     
     if strongBearish
         label.new(bar_index, high, "▼-", style=label.style_label_down, color=color.new(i_bearishColor, 0), textcolor=color.white, size=size.small)
-    else if regularBearish
+    else if regularBearish and not i_strongOnly
         label.new(bar_index, high, "▼", style=label.style_label_down, color=color.new(i_bearishColor, 0), textcolor=color.white, size=size.small)
 
 // --- Candle Coloring ---
 color candleColor = isRanging ? i_rangingColor : (isBullish ? i_bullishColor : i_bearishColor)
-barcolor(i_enableSignals ? candleColor : na)
+barcolor(i_showCandleColors ? candleColor : na)
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 4. FAIR VALUE TRAIL (FVT)
