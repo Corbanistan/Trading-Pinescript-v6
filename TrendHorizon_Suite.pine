@@ -1,0 +1,337 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Corbanistan
+
+//@version=6
+indicator("TrendHorizon Suite", shorttitle="THS", overlay=true, max_lines_count=500, max_labels_count=500, max_bars_back=5000)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 1. INPUTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// --- Smart Signals ---
+string GRP_SIGNALS = "Smart Signals"
+bool   i_enableSignals    = input.bool(true, "Enable Smart Signals", group=GRP_SIGNALS, tooltip="Master switch for trend signals and candle coloring")
+bool   i_detectRanging    = input.bool(true, "Detect Ranging Candles (Gray)", group=GRP_SIGNALS, tooltip="Highlights low momentum / consolidation periods")
+int    i_timeHorizon      = input.int(3, "Time Horizon", minval=1, maxval=7, group=GRP_SIGNALS, tooltip="Sensitivity: 1=Scalp/Fast, 7=Swing/Slow")
+
+// --- Fair Value Trail ---
+string GRP_FVT = "Fair Value Trail"
+bool   i_enableFVT        = input.bool(true, "Enable Fair Value Trail", group=GRP_FVT)
+string i_fvtHorizon       = input.string("Short Term", "Fair Value Trail Horizon", options=["Short Term", "Long Term"], group=GRP_FVT, tooltip="Short Term hugs price closely, Long Term identifies major trends")
+float  i_fvtOpacity       = input.float(85, "Cloud Opacity (%)", minval=50, maxval=95, group=GRP_FVT)
+float  i_fvtDeviation     = input.float(1.5, "Deviation (ATR Multiplier)", minval=0.5, maxval=5.0, step=0.1, group=GRP_FVT, tooltip="Width of the FVT channel - adjust for different asset volatility")
+
+// --- Trend Spine ---
+string GRP_SPINE = "Trend Spine"
+bool   i_enableSpine      = input.bool(true, "Enable Trend Spine", group=GRP_SPINE)
+string i_spineHorizon     = input.string("Short Term", "Trend Spine Horizon", options=["Short Term", "Long Term"], group=GRP_SPINE, tooltip="Short Term reacts quickly, Long Term confirms established trends")
+
+// --- Dashboard ---
+string GRP_DASH = "Dashboard"
+bool   i_showDashboard    = input.bool(true, "Show Dashboard", group=GRP_DASH)
+string i_dashLocation     = input.string("Bottom Right", "Dashboard Location", options=["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group=GRP_DASH)
+int    i_dashLookback     = input.int(100, "Avg Duration Lookback (bars)", minval=20, maxval=500, group=GRP_DASH, tooltip="Number of bars to calculate average signal duration")
+
+// --- Colors (User Customization) ---
+string GRP_COLORS = "Colors"
+color  i_bullishColor     = input.color(#00c853, "Bullish Color", group=GRP_COLORS)
+color  i_bearishColor     = input.color(#ff1744, "Bearish Color", group=GRP_COLORS)
+color  i_rangingColor     = input.color(color.gray, "Ranging/Neutral Color", group=GRP_COLORS)
+color  i_fvtBullColor     = input.color(#2196f3, "FVT Bullish Color", group=GRP_COLORS)
+color  i_fvtBearColor     = input.color(#ff5252, "FVT Bearish Color", group=GRP_COLORS)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 2. HELPER FUNCTIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Time Horizon (1-7) → lookback periods: 10, 15, 22, 33, 50, 75, 100
+// Using switch for simple int output
+simple int signalLen = switch i_timeHorizon
+    1 => 10
+    2 => 15
+    3 => 22
+    4 => 33
+    5 => 50
+    6 => 75
+    => 100
+
+// FVT/Spine horizon lengths (simple int)
+simple int fvtLen = i_fvtHorizon == "Short Term" ? 14 : 28
+simple int spineLen = i_spineHorizon == "Short Term" ? 14 : 28
+
+// Hull Moving Average - smooth and responsive
+// Pre-calculate lengths as simple int
+simple int hmaHalfLen = math.max(1, math.round(signalLen / 2))
+simple int hmaSqrtLen = math.max(1, math.round(math.sqrt(signalLen)))
+float hmaWma1 = ta.wma(close, hmaHalfLen)
+float hmaWma2 = ta.wma(close, signalLen)
+float hma = ta.wma(2 * hmaWma1 - hmaWma2, hmaSqrtLen)
+float hmaPrev = hma[1]
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 3. SMART SIGNALS ENGINE
+// ══════════════════════════════════════════════════════════════════════════════
+
+// --- Trend Detection (Hull MA + ATR) ---
+float hmaSlope = hma - hmaPrev
+
+// ATR for volatility measurement
+float atr = ta.atr(signalLen)
+float atrNorm = atr / close * 100  // Normalized ATR as percentage
+
+// Trend state based on HMA slope
+bool isBullish = hmaSlope > 0
+bool isBearish = hmaSlope < 0
+
+// --- Ranging/Consolidation Detection ---
+// Use built-in ta.dmi() for optimized ADX calculation
+[diPlus, diMinus, adx] = ta.dmi(signalLen, signalLen)
+
+// Ranging when ADX is low (weak trend)
+float adxThreshold = 20
+bool isRanging = i_detectRanging and adx < adxThreshold
+
+// --- Signal Generation ---
+// Track previous trend state
+var int trendState = 0  // -1 = bearish, 0 = neutral, 1 = bullish
+int prevTrendState = trendState
+
+// Update trend state
+if isBullish and not isRanging
+    trendState := 1
+else if isBearish and not isRanging
+    trendState := -1
+else if isRanging
+    trendState := 0
+
+// Detect trend changes (signals)
+bool bullishSignal = trendState == 1 and prevTrendState != 1
+bool bearishSignal = trendState == -1 and prevTrendState != -1
+
+// --- Strong Signal Detection (Momentum Acceleration) ---
+float roc = ta.roc(close, hmaHalfLen)
+float rocThreshold = atrNorm * 0.5  // Dynamic threshold based on volatility
+
+bool strongBullish = bullishSignal and roc > rocThreshold
+bool strongBearish = bearishSignal and roc < -rocThreshold
+
+// Downgrade to regular signal if not strong
+bool regularBullish = bullishSignal and not strongBullish
+bool regularBearish = bearishSignal and not strongBearish
+
+// --- Signal Duration Tracking ---
+var int signalBarCount = 0
+var int bullishSignalCount = 0
+var int bearishSignalCount = 0
+
+// Count bars since last signal change
+signalBarCount := trendState == prevTrendState ? signalBarCount + 1 : 1
+
+// Track durations for averaging (within lookback window)
+if bullishSignal
+    bullishSignalCount := bullishSignalCount + 1
+if bearishSignal  
+    bearishSignalCount := bearishSignalCount + 1
+
+// --- Plot Signals ---
+if i_enableSignals
+    if strongBullish
+        label.new(bar_index, low, "▲+", style=label.style_label_up, color=color.new(i_bullishColor, 0), textcolor=color.white, size=size.small)
+    else if regularBullish
+        label.new(bar_index, low, "▲", style=label.style_label_up, color=color.new(i_bullishColor, 0), textcolor=color.white, size=size.small)
+    
+    if strongBearish
+        label.new(bar_index, high, "▼-", style=label.style_label_down, color=color.new(i_bearishColor, 0), textcolor=color.white, size=size.small)
+    else if regularBearish
+        label.new(bar_index, high, "▼", style=label.style_label_down, color=color.new(i_bearishColor, 0), textcolor=color.white, size=size.small)
+
+// --- Candle Coloring ---
+color candleColor = isRanging ? i_rangingColor : (isBullish ? i_bullishColor : i_bearishColor)
+barcolor(i_enableSignals ? candleColor : na)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 4. FAIR VALUE TRAIL (FVT)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// --- VWMA-based Core Calculation ---
+float fvtVwma = ta.vwma(hlc3, fvtLen)
+float fvtAtr = ta.atr(fvtLen)
+
+// --- Stepped/Trailing Logic ---
+// The trail holds its level until price breaks through
+var float fvtUpper = na
+var float fvtLower = na
+var int fvtTrend = 0  // 1 = bullish, -1 = bearish
+
+float potentialUpper = fvtVwma + fvtAtr * i_fvtDeviation
+float potentialLower = fvtVwma - fvtAtr * i_fvtDeviation
+
+// Initialize on first bar
+if na(fvtUpper)
+    fvtUpper := potentialUpper
+    fvtLower := potentialLower
+    fvtTrend := close > fvtVwma ? 1 : -1
+
+// Update logic with stepping behavior
+if fvtTrend == 1
+    // In bullish trend, lower band can only move up (trailing stop behavior)
+    fvtLower := math.max(fvtLower, potentialLower)
+    fvtUpper := potentialUpper
+    // Flip to bearish if price closes below lower band
+    if close < fvtLower
+        fvtTrend := -1
+        fvtUpper := potentialUpper
+        fvtLower := potentialLower
+else
+    // In bearish trend, upper band can only move down
+    fvtUpper := math.min(fvtUpper, potentialUpper)
+    fvtLower := potentialLower
+    // Flip to bullish if price closes above upper band
+    if close > fvtUpper
+        fvtTrend := 1
+        fvtUpper := potentialUpper
+        fvtLower := potentialLower
+
+// --- FVT Visualization ---
+color fvtCloudBullColor = color.new(i_fvtBullColor, i_fvtOpacity)
+color fvtCloudBearColor = color.new(i_fvtBearColor, i_fvtOpacity)
+color fvtCloudColor = fvtTrend == 1 ? fvtCloudBullColor : fvtCloudBearColor
+
+fvtUpperPlot = plot(i_enableFVT ? fvtUpper : na, "FVT Upper", color=fvtTrend == 1 ? color.new(i_fvtBullColor, 50) : color.new(i_fvtBearColor, 50), linewidth=1)
+fvtLowerPlot = plot(i_enableFVT ? fvtLower : na, "FVT Lower", color=fvtTrend == 1 ? color.new(i_fvtBullColor, 50) : color.new(i_fvtBearColor, 50), linewidth=1)
+fill(fvtUpperPlot, fvtLowerPlot, color=i_enableFVT ? fvtCloudColor : na, title="FVT Cloud")
+
+// --- Optimal Entry Signals (Pullback Detection) ---
+bool fvtBuySignal = fvtTrend == 1 and low <= fvtUpper and low >= fvtLower and close > fvtLower
+bool fvtSellSignal = fvtTrend == -1 and high >= fvtLower and high <= fvtUpper and close < fvtUpper
+
+plotshape(i_enableFVT and fvtBuySignal, "FVT Buy", shape.triangleup, location.belowbar, color.new(i_fvtBullColor, 0), size=size.small)
+plotshape(i_enableFVT and fvtSellSignal, "FVT Sell", shape.triangledown, location.abovebar, color.new(i_fvtBearColor, 0), size=size.small)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 5. TREND SPINE
+// ══════════════════════════════════════════════════════════════════════════════
+
+// SuperTrend-based calculation
+float spineAtr = ta.atr(spineLen)
+float spineMultiplier = 2.0
+float spineHl2 = hl2
+
+float spineUpperBand = spineHl2 + spineMultiplier * spineAtr
+float spineLowerBand = spineHl2 - spineMultiplier * spineAtr
+
+// Stepped SuperTrend logic
+var float spineFinalUpper = na
+var float spineFinalLower = na
+var int spineTrend = 0  // 1 = bullish, -1 = bearish, 0 = neutral/consolidation
+
+// Initialize
+if na(spineFinalUpper)
+    spineFinalUpper := spineUpperBand
+    spineFinalLower := spineLowerBand
+
+// Upper band can only move down (resistance)
+spineFinalUpper := close[1] < spineFinalUpper ? math.min(spineFinalUpper, spineUpperBand) : spineUpperBand
+
+// Lower band can only move up (support)
+spineFinalLower := close[1] > spineFinalLower ? math.max(spineFinalLower, spineLowerBand) : spineLowerBand
+
+// Determine trend
+int prevSpineTrend = spineTrend
+if close > spineFinalUpper
+    spineTrend := 1
+else if close < spineFinalLower
+    spineTrend := -1
+
+// Detect neutral/consolidation using ADX
+bool spineNeutral = adx < (adxThreshold - 5)  // Slightly lower threshold for Spine
+
+// The Spine line value
+float spineValue = spineTrend == 1 ? spineFinalLower : spineFinalUpper
+
+// --- Spine Visualization ---
+color spineColor = spineNeutral ? i_rangingColor : (spineTrend == 1 ? i_bullishColor : i_bearishColor)
+plot(i_enableSpine ? spineValue : na, "Trend Spine", color=spineColor, linewidth=3, style=plot.style_linebr)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 6. STATUS DASHBOARD
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Calculate average signal durations
+var array<int> bullishDurations = array.new_int(0)
+var array<int> bearishDurations = array.new_int(0)
+var int lastSignalDuration = 0
+
+// Track signal durations
+if bullishSignal and lastSignalDuration > 0
+    array.push(bearishDurations, lastSignalDuration)
+    // Keep array size manageable
+    if array.size(bearishDurations) > 50
+        array.shift(bearishDurations)
+    lastSignalDuration := 0
+else if bearishSignal and lastSignalDuration > 0
+    array.push(bullishDurations, lastSignalDuration)
+    if array.size(bullishDurations) > 50
+        array.shift(bullishDurations)
+    lastSignalDuration := 0
+
+lastSignalDuration := lastSignalDuration + 1
+
+// Calculate averages
+float avgBullishDuration = array.size(bullishDurations) > 0 ? array.avg(bullishDurations) : 0
+float avgBearishDuration = array.size(bearishDurations) > 0 ? array.avg(bearishDurations) : 0
+float avgDuration = (avgBullishDuration + avgBearishDuration) / 2
+
+// Dashboard position and table creation
+var table dashboard = table.new(
+    i_dashLocation == "Top Left" ? position.top_left : 
+    i_dashLocation == "Top Right" ? position.top_right : 
+    i_dashLocation == "Bottom Left" ? position.bottom_left : 
+    position.bottom_right,
+    4, 4, bgcolor=color.new(#1a1a2e, 10), border_width=1, border_color=color.new(#ffffff, 80))
+
+if i_showDashboard and barstate.islast
+    // Header row
+    table.cell(dashboard, 0, 0, "Component", text_color=color.white, text_size=size.small, bgcolor=color.new(#2d2d44, 0))
+    table.cell(dashboard, 1, 0, "Signal", text_color=color.white, text_size=size.small, bgcolor=color.new(#2d2d44, 0))
+    table.cell(dashboard, 2, 0, "Avg Duration", text_color=color.white, text_size=size.small, bgcolor=color.new(#2d2d44, 0))
+    table.cell(dashboard, 3, 0, "Current", text_color=color.white, text_size=size.small, bgcolor=color.new(#2d2d44, 0))
+    
+    // Smart Signals row
+    string ssSignal = isRanging ? "—" : (trendState == 1 ? "▲" : "▼")
+    color ssColor = isRanging ? i_rangingColor : (trendState == 1 ? i_bullishColor : i_bearishColor)
+    table.cell(dashboard, 0, 1, "Smart Signals", text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 1, 1, ssSignal, text_color=ssColor, text_size=size.small)
+    table.cell(dashboard, 2, 1, str.tostring(avgDuration, "#.#") + " bars", text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 3, 1, str.tostring(signalBarCount) + " bars", text_color=color.white, text_size=size.small)
+    
+    // Fair Value Trail row
+    string fvtSignal = fvtTrend == 1 ? "Bullish" : "Bearish"
+    color fvtSigColor = fvtTrend == 1 ? i_fvtBullColor : i_fvtBearColor
+    table.cell(dashboard, 0, 2, "Fair Value Trail", text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 1, 2, fvtSignal, text_color=fvtSigColor, text_size=size.small)
+    table.cell(dashboard, 2, 2, "—", text_color=i_rangingColor, text_size=size.small)
+    table.cell(dashboard, 3, 2, "—", text_color=i_rangingColor, text_size=size.small)
+    
+    // Trend Spine row
+    string spineSignal = spineNeutral ? "Neutral" : (spineTrend == 1 ? "Bullish" : "Bearish")
+    color spineSigColor = spineNeutral ? i_rangingColor : (spineTrend == 1 ? i_bullishColor : i_bearishColor)
+    table.cell(dashboard, 0, 3, "Trend Spine", text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 1, 3, spineSignal, text_color=spineSigColor, text_size=size.small)
+    table.cell(dashboard, 2, 3, "—", text_color=i_rangingColor, text_size=size.small)
+    table.cell(dashboard, 3, 3, "—", text_color=i_rangingColor, text_size=size.small)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 7. ALERTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(regularBullish, "Bullish Signal", "THS: Bullish trend signal detected")
+alertcondition(regularBearish, "Bearish Signal", "THS: Bearish trend signal detected")
+alertcondition(strongBullish, "Strong Bullish Signal", "THS: Strong bullish signal with momentum acceleration")
+alertcondition(strongBearish, "Strong Bearish Signal", "THS: Strong bearish signal with momentum acceleration")
+alertcondition(bullishSignal, "Any Bullish Signal", "THS: Any bullish signal (regular or strong)")
+alertcondition(bearishSignal, "Any Bearish Signal", "THS: Any bearish signal (regular or strong)")
+alertcondition(fvtBuySignal, "FVT Buy Entry", "THS: Optimal buy entry - pullback to Fair Value Trail")
+alertcondition(fvtSellSignal, "FVT Sell Entry", "THS: Optimal sell entry - pullback to Fair Value Trail")
+alertcondition(spineTrend == 1 and prevSpineTrend != 1, "Trend Spine Bullish", "THS: Trend Spine turned bullish")
+alertcondition(spineTrend == -1 and prevSpineTrend != -1, "Trend Spine Bearish", "THS: Trend Spine turned bearish")
