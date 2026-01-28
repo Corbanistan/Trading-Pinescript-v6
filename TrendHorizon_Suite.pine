@@ -22,6 +22,9 @@ bool   i_enableFVT        = input.bool(true, "Enable Fair Value Trail", group=GR
 string i_fvtHorizon       = input.string("Short Term", "Fair Value Trail Horizon", options=["Short Term", "Long Term"], group=GRP_FVT, tooltip="Short Term hugs price closely, Long Term identifies major trends")
 float  i_fvtOpacity       = input.float(85, "Cloud Opacity (%)", minval=50, maxval=95, group=GRP_FVT)
 float  i_fvtDeviation     = input.float(1.5, "Deviation (ATR Multiplier)", minval=0.5, maxval=5.0, step=0.1, group=GRP_FVT, tooltip="Width of the FVT channel - adjust for different asset volatility")
+bool   i_fvtCloudFill     = input.bool(true, "Fill Cloud", group=GRP_FVT, tooltip="When off, only band lines are shown")
+bool   i_showFVTSignals   = input.bool(false, "Show FVT Entry Signals", group=GRP_FVT, tooltip="Displays triangles when price pulls back to the cloud")
+int    i_fvtSignalCooldown = input.int(5, "Signal Cooldown (bars)", minval=1, maxval=20, group=GRP_FVT, tooltip="Minimum bars between FVT signals")
 
 // --- Trend Spine ---
 string GRP_SPINE = "Trend Spine"
@@ -206,14 +209,21 @@ color fvtCloudColor = fvtTrend == 1 ? fvtCloudBullColor : fvtCloudBearColor
 
 fvtUpperPlot = plot(i_enableFVT ? fvtUpper : na, "FVT Upper", color=fvtTrend == 1 ? color.new(i_fvtBullColor, 50) : color.new(i_fvtBearColor, 50), linewidth=1)
 fvtLowerPlot = plot(i_enableFVT ? fvtLower : na, "FVT Lower", color=fvtTrend == 1 ? color.new(i_fvtBullColor, 50) : color.new(i_fvtBearColor, 50), linewidth=1)
-fill(fvtUpperPlot, fvtLowerPlot, color=i_enableFVT ? fvtCloudColor : na, title="FVT Cloud")
+fill(fvtUpperPlot, fvtLowerPlot, color=(i_enableFVT and i_fvtCloudFill) ? fvtCloudColor : na, title="FVT Cloud")
 
-// --- Optimal Entry Signals (Pullback Detection) ---
-bool fvtBuySignal = fvtTrend == 1 and low <= fvtUpper and low >= fvtLower and close > fvtLower
-bool fvtSellSignal = fvtTrend == -1 and high >= fvtLower and high <= fvtUpper and close < fvtUpper
+// --- Optimal Entry Signals (Pullback Detection with Cooldown) ---
+bool fvtBuyCondition = fvtTrend == 1 and low <= fvtUpper and low >= fvtLower and close > fvtLower
+bool fvtSellCondition = fvtTrend == -1 and high >= fvtLower and high <= fvtUpper and close < fvtUpper
 
-plotshape(i_enableFVT and fvtBuySignal, "FVT Buy", shape.triangleup, location.belowbar, color.new(i_fvtBullColor, 0), size=size.small)
-plotshape(i_enableFVT and fvtSellSignal, "FVT Sell", shape.triangledown, location.abovebar, color.new(i_fvtBearColor, 0), size=size.small)
+// Apply cooldown to prevent signal spam
+int barsSinceLastFvtBuy = ta.barssince(fvtBuyCondition[1])
+int barsSinceLastFvtSell = ta.barssince(fvtSellCondition[1])
+bool fvtBuySignal = fvtBuyCondition and (na(barsSinceLastFvtBuy) or barsSinceLastFvtBuy >= i_fvtSignalCooldown)
+bool fvtSellSignal = fvtSellCondition and (na(barsSinceLastFvtSell) or barsSinceLastFvtSell >= i_fvtSignalCooldown)
+
+plotshape(i_enableFVT and i_showFVTSignals and fvtBuySignal, "FVT Buy", shape.triangleup, location.belowbar, color.new(i_fvtBullColor, 0), size=size.small)
+plotshape(i_enableFVT and i_showFVTSignals and fvtSellSignal, "FVT Sell", shape.triangledown, location.abovebar, color.new(i_fvtBearColor, 0), size=size.small)
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 5. TREND SPINE
